@@ -1,98 +1,160 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import mysql.connector
+from mysql.connector import Error
 import jwt
 import datetime
+from functools import wraps
 
 app = Flask(__name__)
 CORS(app)
 app.config['SECRET_KEY'] = 'your_secret_key'
 
-# Real data with updated cover images
-users = []
-books = [
-    {"id": 1, "title": "Data Structures and Algorithms", "author": "Robert Lafore", "category": "Computer Science", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/PqffhqUNgjHejxnz.jpg"},
-    {"id": 2, "title": "Introduction to Machine Learning", "author": "Ethem Alpaydin", "category": "AI & ML", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/eoLEdRasCbfdJKLl.jpg"},
-    {"id": 3, "title": "Quantum Physics for Beginners", "author": "Michael Brooks", "category": "Physics", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/iOMBavLDamQHnvjI.jpg"},
-    {"id": 4, "title": "Modern Web Development", "author": "Kyle Simpson", "category": "Web Development", "coverImage": "https://via.placeholder.com/150x200?text=Modern+Web+Dev"},
-    {"id": 5, "title": "Clean Code", "author": "Robert C. Martin", "category": "Computer Science", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/dsotFHpbWmlVqoqE.jpg"},
-    {"id": 6, "title": "Deep Learning Illustrated", "author": "Jon Krohn", "category": "AI & ML", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/gDhfxfjkfhEAEtxi.jpg"},
-    {"id": 7, "title": "Astrophysics for People in a Hurry", "author": "Neil deGrasse Tyson", "category": "Physics", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/mmvxMboUMISXuGjJ.jpg"},
-    {"id": 8, "title": "Eloquent JavaScript", "author": "Marijn Haverbeke", "category": "Web Development", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/WiMnFrSmEskQSHZG.jpg"},
-    {"id": 9, "title": "Computer Networking: A Top-Down Approach", "author": "James Kurose", "category": "Computer Science", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/CssZayVhRZoBJwDx.jpg"},
-    {"id": 10, "title": "Pattern Recognition and Machine Learning", "author": "Christopher Bishop", "category": "AI & ML", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/kMvUeLTCYVkQolhH.jpg"},
-    {"id": 11, "title": "The Feynman Lectures on Physics", "author": "Richard Feynman", "category": "Physics", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/TyhOYhQTgOKqnLge.jpg"},
-    {"id": 12, "title": "HTML and CSS: Design and Build Websites", "author": "Jon Duckett", "category": "Web Development", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/XKdjouKymFusvTtC.jpg"},
-    {"id": 13, "title": "Operating System Concepts", "author": "Abraham Silberschatz", "category": "Computer Science", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/WBMlpqOYTIMSuBIf.jpg"},
-    {"id": 14, "title": "Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow", "author": "Aurélien Géron", "category": "AI & ML", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/jQTiaSmkjyzajFZA.jpg"},
-    {"id": 15, "title": "Seven Brief Lessons on Physics", "author": "Carlo Rovelli", "category": "Physics", "coverImage": "https://files.manuscdn.com/user_upload_by_module/session_file/310419663028403965/WLxnLQEvRgjrquYy.jpg"}
-]
+# Database configuration
+db_config = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': 'your_password',
+    'database': 'rst_library'
+}
 
-events = [
-    {"id": 1, "title": "Research Paper Writing Workshop", "description": "Learn effective strategies for writing academic research papers.", "date": "2026-04-15", "time": "14:00 - 16:00", "location": "Main Library, Room B12"},
-    {"id": 2, "title": "Digital Resources Orientation", "description": "Tour of our digital databases, e-books, and research tools.", "date": "2026-04-20", "time": "10:00 - 11:30", "location": "Library Computer Lab"},
-    {"id": 3, "title": "Book Club: Classic Literature", "description": "Monthly discussion on selected classic novels. All are welcome!", "date": "2026-05-01", "time": "16:00 - 17:30", "location": "Library Reading Room"}
-]
+def get_db_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        return connection
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        return None
 
-favorites = {}
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if 'Authorization' in request.headers:
+            token = request.headers['Authorization'].split(" ")[1]
+        if not token:
+            return jsonify({'message': 'Token is missing!'}), 401
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM users WHERE email = %s", (data['email'],))
+            current_user = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except:
+            return jsonify({'message': 'Token is invalid!'}), 401
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
-    users.append(data)
-    return jsonify({"message": "User registered successfully"}), 201
+    conn = get_db_connection()
+    if not conn: return jsonify({"message": "DB Connection Error"}), 500
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (fullName, email, studentId, password) VALUES (%s, %s, %s, %s)",
+                       (data['fullName'], data['email'], data['studentId'], data['password']))
+        conn.commit()
+        return jsonify({"message": "User registered successfully"}), 201
+    except Error as e:
+        return jsonify({"message": str(e)}), 400
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    user = next((u for u in users if u['email'] == data['email'] and u['password'] == data['password']), None)
+    conn = get_db_connection()
+    if not conn: return jsonify({"message": "DB Connection Error"}), 500
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM users WHERE email = %s AND password = %s", (data['email'], data['password']))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
     if user:
         token = jwt.encode({'email': user['email'], 'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)}, app.config['SECRET_KEY'])
         return jsonify({"token": token})
     return jsonify({"message": "Invalid credentials"}), 401
 
-@app.route('/api/user/profile', methods=['GET'])
-def profile():
-    token = request.headers.get('Authorization').split()[1]
-    try:
-        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
-        user = next((u for u in users if u['email'] == data['email']), None)
-        return jsonify(user)
-    except:
-        return jsonify({"message": "Invalid token"}), 401
-
 @app.route('/api/books', methods=['GET'])
 def get_books():
     search = request.args.get('search', '').lower()
     category = request.args.get('category', 'All')
-    filtered_books = [b for b in books if (category == 'All' or b['category'] == category) and (search in b['title'].lower() or search in b['author'].lower())]
-    return jsonify(filtered_books)
+    
+    conn = get_db_connection()
+    if not conn: return jsonify([])
+    cursor = conn.cursor(dictionary=True)
+    
+    query = "SELECT * FROM books WHERE 1=1"
+    params = []
+    
+    if category != 'All':
+        query += " AND category = %s"
+        params.append(category)
+    
+    if search:
+        query += " AND (LOWER(title) LIKE %s OR LOWER(author) LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%"])
+        
+    cursor.execute(query, tuple(params))
+    books = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify(books)
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
+    conn = get_db_connection()
+    if not conn: return jsonify([])
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM events ORDER BY date ASC")
+    events = cursor.fetchall()
+    cursor.close()
+    conn.close()
     return jsonify(events)
 
 @app.route('/api/user/favorites', methods=['GET', 'POST'])
-def handle_favorites():
-    token = request.headers.get('Authorization').split()[1]
-    try:
-        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
-        email = data['email']
-        if request.method == 'POST':
-            book_id = request.json.get('bookId')
-            if email not in favorites:
-                favorites[email] = []
-            if book_id not in favorites[email]:
-                favorites[email].append(book_id)
+@token_required
+def handle_favorites(current_user):
+    conn = get_db_connection()
+    if not conn: return jsonify({"message": "DB Error"}), 500
+    cursor = conn.cursor(dictionary=True)
+    
+    if request.method == 'POST':
+        book_id = request.json.get('bookId')
+        try:
+            cursor.execute("INSERT IGNORE INTO user_favorites (user_id, book_id) VALUES (%s, %s)", (current_user['id'], book_id))
+            conn.commit()
             return jsonify({"message": "Added to favorites"})
-        else:
-            user_favs = favorites.get(email, [])
-            fav_books = [b for b in books if b['id'] in user_favs]
-            return jsonify(fav_books)
-    except:
-        return jsonify({"message": "Invalid token"}), 401
+        except Error as e:
+            return jsonify({"message": str(e)}), 400
+    else:
+        cursor.execute("""
+            SELECT b.* FROM books b 
+            JOIN user_favorites uf ON b.id = uf.book_id 
+            WHERE uf.user_id = %s
+        """, (current_user['id'],))
+        fav_books = cursor.fetchall()
+        return jsonify(fav_books)
+    
+    cursor.close()
+    conn.close()
 
 @app.route('/api/complaints', methods=['POST'])
-def complaints():
+@token_required
+def complaints(current_user):
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO complaints (issueType, message, userId) VALUES (%s, %s, %s)",
+                   (data['issueType'], data['message'], current_user['id']))
+    conn.commit()
+    cursor.close()
+    conn.close()
     return jsonify({"message": "Complaint received"})
 
 if __name__ == '__main__':
